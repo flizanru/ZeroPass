@@ -8,3 +8,17 @@ desktop.ini
 
 /CLAUDE.md
 /README.md
+
+# Локальные проверки и документация не публикуются в репозитории.
+*_test.go
+*.md
+*.mdx
+*.rst
+*.adoc
+*.txt
+**/LICENSE
+**/LICENSE.*
+**/COPYING
+**/COPYING.*
+**/NOTICE
+**/NOTICE.*

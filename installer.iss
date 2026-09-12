@@ -1,5 +1,5 @@
 #define MyAppName "ZeroPass"
-#define MyAppVersion "ALPHA-0"
+#define MyAppVersion "0.1.0-alpha.1"
 #define MyAppPublisher "Flizan & Suhov & Nikita Sushkov"
 #define MyAppExeName "ZeroPass.exe"
 
@@ -14,7 +14,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=dist
-OutputBaseFilename=ZeroPassSetup-ALPHA-0
+OutputBaseFilename=ZeroPassSetup-0.1.0-alpha.1
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64
