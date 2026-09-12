@@ -1,0 +1,52 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gioui.org/app"
+	"github.com/awnumar/memguard"
+
+	"zeropass/internal/crypto"
+	"zeropass/internal/gui"
+	"zeropass/internal/secure"
+	"zeropass/internal/vault"
+)
+
+func main() {
+
+	memguard.CatchInterrupt()
+
+	var path string
+	flag.StringVar(&path, "vault", "", "путь к файлу хранилища (по умолчанию — рядом с exe)")
+	flag.Parse()
+
+	if path == "" {
+		p, err := vault.DefaultPath()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "не удалось определить каталог exe:", err)
+			os.Exit(1)
+		}
+		path = p
+	}
+
+	go func() {
+		exe, err := os.Executable()
+		if err == nil {
+			err = crypto.InitSodium(filepath.Join(filepath.Dir(exe), "libsodium.dll"))
+		}
+		if err == nil {
+			err = gui.Run(path)
+		}
+		memguard.Purge()
+		secure.WaitForClipboardClear()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ZeroPass:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}()
+	app.Main()
+}

@@ -1,0 +1,15 @@
+/ZeroPass.exe
+/libsodium.dll
+/dist/
+
+*_test.go
+
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+libsodium.dll
+upstream-static.lib
+
+/CLAUDE.md
+/README.md
