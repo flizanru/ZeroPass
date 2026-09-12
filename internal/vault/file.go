@@ -14,16 +14,7 @@ const (
 	BackupSuffix = ".bak"
 )
 
-func DefaultPath() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("путь к исполняемому файлу: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-	return filepath.Join(filepath.Dir(exe), FileName), nil
-}
+var verifyPreparedFile = readFile
 
 func readFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
@@ -69,7 +60,7 @@ func prepareFile(dir string, data []byte) (name string, err error) {
 	if err = tmp.Close(); err != nil {
 		return name, err
 	}
-	back, err := readFile(name)
+	back, err := verifyPreparedFile(name)
 	if err != nil {
 		return name, err
 	}

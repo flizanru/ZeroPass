@@ -2,6 +2,7 @@ package vault
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/awnumar/memguard"
@@ -11,6 +12,8 @@ import (
 
 var ErrConflict = errors.New("хранилище изменено другим экземпляром; заблокируйте и откройте его заново")
 var ErrExists = errors.New("хранилище или резервная копия уже существуют")
+
+const paddingBlock = 4096
 
 type Vault struct {
 	Path       string
@@ -57,7 +60,7 @@ func Unlock(path string, password *memguard.LockedBuffer) (*Vault, error) {
 		return nil, err
 	}
 	var data []byte
-	err = withWriteLock(func() error {
+	err = withWriteLock(path, func() error {
 		var err error
 		if err = rejectHardLinks(path); err != nil {
 			return err
@@ -82,13 +85,8 @@ func Unlock(path string, password *memguard.LockedBuffer) (*Vault, error) {
 		return nil, err
 	}
 	defer plain.Destroy()
-	st, err := newStore()
+	st, err := storeFromPlain(plain.Bytes())
 	if err != nil {
-		keySession.Destroy()
-		return nil, err
-	}
-	if err := st.load(plain.Bytes()); err != nil {
-		st.Close()
 		keySession.Destroy()
 		return nil, fmt.Errorf("загрузка записей: %w", err)
 	}
@@ -129,7 +127,12 @@ func (v *Vault) save(st *Store) error {
 		return err
 	}
 	defer plain.Destroy()
-	nonce, ct, err := crypto.Seal(v.key, plain.Bytes(), v.header)
+	padded, err := padPlain(plain.Bytes())
+	if err != nil {
+		return err
+	}
+	defer padded.Destroy()
+	nonce, ct, err := crypto.Seal(v.key, padded.Bytes(), v.header)
 	if err != nil {
 		return err
 	}
@@ -137,7 +140,7 @@ func (v *Vault) save(st *Store) error {
 	out = append(out, v.header...)
 	out = append(out, nonce...)
 	out = append(out, ct...)
-	return withWriteLock(func() error {
+	return withWriteLock(v.path, func() error {
 		if err := rejectHardLinks(v.path); err != nil {
 			return err
 		}
@@ -166,6 +169,61 @@ func (v *Vault) save(st *Store) error {
 	})
 }
 
+func padPlain(data []byte) (*memguard.LockedBuffer, error) {
+	if len(data) > maxPlainLen-4 {
+		return nil, ErrTooLarge
+	}
+	needed := 4 + len(data)
+	size := (needed + paddingBlock - 1) / paddingBlock * paddingBlock
+	if size > maxPlainLen {
+		return nil, ErrTooLarge
+	}
+	out := memguard.NewBuffer(size)
+	binary.LittleEndian.PutUint32(out.Bytes(), uint32(len(data)))
+	copy(out.Bytes()[4:], data)
+	return out, nil
+}
+
+func paddedBody(data []byte) ([]byte, bool) {
+	if len(data) < 8 || len(data)%paddingBlock != 0 {
+		return nil, false
+	}
+	n := int(binary.LittleEndian.Uint32(data[:4]))
+	if n < 4 || n > len(data)-4 {
+		return nil, false
+	}
+	for _, b := range data[4+n:] {
+		if b != 0 {
+			return nil, false
+		}
+	}
+	return data[4 : 4+n], true
+}
+
+func storeFromPlain(data []byte) (*Store, error) {
+	st, err := newStore()
+	if err != nil {
+		return nil, err
+	}
+	if err := st.load(data); err == nil {
+		return st, nil
+	}
+	st.Close()
+	body, ok := paddedBody(data)
+	if !ok {
+		return nil, errCodec
+	}
+	st, err = newStore()
+	if err != nil {
+		return nil, err
+	}
+	if err := st.load(body); err != nil {
+		st.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
 func (v *Vault) Lock() {
 	if v.Store != nil {
 		v.Store.Close()
@@ -183,7 +241,7 @@ func Recover(path string) error {
 	if err != nil {
 		return err
 	}
-	return withWriteLock(func() error {
+	return withWriteLock(path, func() error {
 		if _, err := os.Lstat(path); err == nil {
 			return ErrExists
 		} else if !errors.Is(err, os.ErrNotExist) {

@@ -6,7 +6,7 @@ import (
 	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
-	"runtime"
+	"time"
 )
 
 func canonicalPath(path string) (string, error) {
@@ -26,23 +26,35 @@ func canonicalPath(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(absolute)), nil
 }
 
-func withWriteLock(fn func() error) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	name, _ := windows.UTF16PtrFromString("Global\\ZeroPass.VaultWrite.v1")
-	h, err := windows.CreateMutex(nil, false, name)
-	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return fmt.Errorf("блокировка записи: %w", err)
-	}
-	defer windows.CloseHandle(h)
-	status, err := windows.WaitForSingleObject(h, 30000)
+var writeLockTimeout = 30 * time.Second
+
+func withWriteLock(path string, fn func() error) error {
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("файл блокировки записи: %w", err)
 	}
-	if status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED {
-		return errors.New("другой экземпляр занят сохранением; повторите попытку")
+	defer f.Close()
+	if err := securePathDACL(lockPath); err != nil {
+		return fmt.Errorf("защита файла блокировки: %w", err)
 	}
-	defer windows.ReleaseMutex(h)
+	h := windows.Handle(f.Fd())
+	var overlapped windows.Overlapped
+	deadline := time.Now().Add(writeLockTimeout)
+	for {
+		err = windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			return fmt.Errorf("блокировка записи: %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			return errors.New("другой экземпляр занят сохранением; повторите попытку")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	defer windows.UnlockFileEx(h, 0, 1, 0, &overlapped)
 	return fn()
 }
 

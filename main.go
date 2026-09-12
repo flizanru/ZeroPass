@@ -20,7 +20,7 @@ func main() {
 	memguard.CatchInterrupt()
 
 	var path string
-	flag.StringVar(&path, "vault", "", "путь к файлу хранилища (по умолчанию — рядом с exe)")
+	flag.StringVar(&path, "vault", "", "путь к файлу хранилища (по умолчанию — LocalAppData\\ZeroPass)")
 	flag.Parse()
 
 	if path == "" {

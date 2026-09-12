@@ -1,10 +1,13 @@
 package gui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -157,6 +160,15 @@ func Run(path string) error {
 		a.setWarn(suspendErr.Error())
 	} else {
 		defer releaseSuspend()
+	}
+	if defaultPath, pathErr := vault.DefaultPath(); pathErr == nil && strings.EqualFold(filepath.Clean(path), filepath.Clean(defaultPath)) {
+		_, warning, migrateErr := vault.MigrateLegacy()
+		if migrateErr != nil {
+			return fmt.Errorf("миграция старого хранилища: %w", migrateErr)
+		}
+		if warning != "" {
+			a.setWarn(warning)
+		}
 	}
 
 	if err := a.initStage(); err != nil {
