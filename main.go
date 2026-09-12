@@ -31,7 +31,7 @@ func main() {
 	if path == "" {
 		p, err := vault.DefaultPath()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "не удалось определить каталог exe:", err)
+			fmt.Fprintln(os.Stderr, "ZeroPass: не удалось подготовить защищённый каталог хранилища")
 			os.Exit(1)
 		}
 		path = p
@@ -47,7 +47,7 @@ func main() {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "ZeroPass:", err)
+			fmt.Fprintln(os.Stderr, "ZeroPass: приложение завершилось с ошибкой")
 			os.Exit(1)
 		}
 		os.Exit(0)

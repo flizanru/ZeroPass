@@ -129,6 +129,12 @@ func CopySensitive(hwnd uintptr, data []byte, ttl time.Duration) (warning string
 		return "", err
 	}
 	defer procCloseClipboard.Call()
+	if ourSeq != 0 && clipSequence() == ourSeq {
+		if err := wipeClipboardHandle(ourHandle); err != nil {
+			return "", err
+		}
+	}
+	ourSeq, ourHandle = 0, 0
 
 	if r, _, _ := procEmptyClipboard.Call(); r == 0 {
 		return "", errors.New("EmptyClipboard не удался")
@@ -203,6 +209,23 @@ var clipEmpty = func() error {
 	return nil
 }
 
+func wipeClipboardHandle(handle uintptr) error {
+	if handle == 0 || clipData() != handle {
+		return nil
+	}
+	size := clipSize(handle)
+	if size == 0 {
+		return errors.New("не удалось определить размер данных буфера обмена")
+	}
+	p := clipLock(handle)
+	if p == 0 {
+		return errors.New("не удалось заблокировать память буфера обмена для очистки")
+	}
+	clipWipe(p, size)
+	clipUnlock(handle)
+	return nil
+}
+
 func clearIfSeq(mySeq uint32) error {
 	clipMu.Lock()
 	defer clipMu.Unlock()
@@ -220,17 +243,8 @@ func clearIfSeq(mySeq uint32) error {
 		ourHandle = 0
 		return nil
 	}
-	if ourHandle != 0 && clipData() == ourHandle {
-		size := clipSize(ourHandle)
-		if size == 0 {
-			return errors.New("не удалось определить размер данных буфера обмена")
-		}
-		p := clipLock(ourHandle)
-		if p == 0 {
-			return errors.New("не удалось заблокировать память буфера обмена для очистки")
-		}
-		clipWipe(p, size)
-		clipUnlock(ourHandle)
+	if err := wipeClipboardHandle(ourHandle); err != nil {
+		return err
 	}
 	if err := clipEmpty(); err != nil {
 		return err

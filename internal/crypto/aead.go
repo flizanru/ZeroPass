@@ -53,7 +53,7 @@ func sealBytes(key, plaintext, aad []byte) (nonce, ct []byte, err error) {
 }
 
 func openBytes(key, nonce, ct, aad []byte) (*memguard.LockedBuffer, error) {
-	if len(key) != KeyLen || len(nonce) != NonceLen || len(ct) <= TagLen {
+	if len(key) != KeyLen || len(nonce) != NonceLen || len(ct) < TagLen {
 		return nil, ErrDecrypt
 	}
 	out := memguard.NewBuffer(len(ct) - TagLen)

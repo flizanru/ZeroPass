@@ -65,10 +65,11 @@ func (sp *securePW) insert(s string) {
 		if r == 0 || r == '\n' || r == '\r' {
 			continue
 		}
-		if len(sp.sizes) >= maxPasswordRunes || sp.n+utf8.UTFMax > len(sp.buf.Bytes()) {
+		sz := utf8.RuneLen(r)
+		if sz < 1 || len(sp.sizes) >= maxPasswordRunes || sp.n+sz > len(sp.buf.Bytes()) {
 			return
 		}
-		sz := utf8.EncodeRune(sp.buf.Bytes()[sp.n:], r)
+		sz = utf8.EncodeRune(sp.buf.Bytes()[sp.n:], r)
 		sp.n += sz
 		sp.sizes = append(sp.sizes, sz)
 	}
