@@ -8,7 +8,7 @@ import (
 const pwCharset = "abcdefghijklmnopqrstuvwxyz" +
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
 	"0123456789" +
-	"!#$%&()*+,-./:;<=>?@[]^_{|}~"
+	"!#$%&()*+-/=?@[]^_{|}~"
 
 func generatePassword(n int) ([]byte, error) {
 	out := make([]byte, n)

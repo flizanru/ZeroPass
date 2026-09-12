@@ -72,8 +72,11 @@ type App struct {
 	th         *material.Theme
 	path       string
 
-	protected bool
-	protNote  string
+	protected         bool
+	protNote          string
+	noProcessACL      bool
+	processACLApplied bool
+	hardeningNotes    []string
 
 	stage     stage
 	vault     *vault.Vault
@@ -132,20 +135,29 @@ var darkPalette = material.Palette{
 	ContrastFg: color.NRGBA{R: 0x15, G: 0x16, B: 0x1a, A: 0xff},
 }
 
-func Run(path string) error {
+func Run(path string, noProcessACL bool, mitigationErrors []error) error {
 	th := material.NewTheme()
 	th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(gofont.Collection()))
 	th.Palette = darkPalette
 
 	a := &App{
-		th:         th,
-		path:       path,
-		lastAct:    time.Now(),
-		pw1:        newSecurePW("мастер-пароль"),
-		pw2:        newSecurePW("повторите пароль"),
-		done:       make(chan struct{}),
-		tickerDone: make(chan struct{}),
-		suspendCh:  make(chan struct{}, 1),
+		th:           th,
+		path:         path,
+		lastAct:      time.Now(),
+		pw1:          newSecurePW("мастер-пароль"),
+		pw2:          newSecurePW("повторите пароль"),
+		done:         make(chan struct{}),
+		tickerDone:   make(chan struct{}),
+		suspendCh:    make(chan struct{}, 1),
+		noProcessACL: noProcessACL,
+	}
+	for _, err := range mitigationErrors {
+		if err != nil {
+			a.hardeningNotes = append(a.hardeningNotes, err.Error())
+		}
+	}
+	if noProcessACL {
+		a.hardeningNotes = append(a.hardeningNotes, "DACL процесса отключён флагом -no-process-acl")
 	}
 	a.list.Axis = layout.Vertical
 	a.search.SingleLine = true
@@ -256,6 +268,12 @@ func (a *App) onWindowHandle(hwnd uintptr) {
 		a.protNote = ""
 	}
 	_ = secure.DarkTitleBar(hwnd)
+	if !a.noProcessACL && !a.processACLApplied {
+		a.processACLApplied = true
+		if err := secure.DenySelfProcessAccess(); err != nil {
+			a.hardeningNotes = append(a.hardeningNotes, "DACL процесса: "+err.Error())
+		}
+	}
 }
 
 func kdfCPUCap() func() {
@@ -492,11 +510,17 @@ func (a *App) statusBar(gtx layout.Context) layout.Dimensions {
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			txt := "● защита экрана активна"
 			col := rgb(0x66d19e)
+			var problems []string
 			if !a.protected {
-				txt = "● защита экрана недоступна на этом устройстве"
+				problem := "защита экрана недоступна на этом устройстве"
 				if a.protNote != "" {
-					txt += ": " + a.protNote
+					problem += ": " + a.protNote
 				}
+				problems = append(problems, problem)
+			}
+			problems = append(problems, a.hardeningNotes...)
+			if len(problems) > 0 {
+				txt = "● " + strings.Join(problems, " · ")
 				col = rgb(0xff6b6b)
 			}
 			lbl := material.Caption(a.th, txt)

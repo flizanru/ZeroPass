@@ -20,8 +20,13 @@ func main() {
 	memguard.CatchInterrupt()
 
 	var path string
+	var noProcessACL, strictHandles bool
 	flag.StringVar(&path, "vault", "", "путь к файлу хранилища (по умолчанию — LocalAppData\\ZeroPass)")
+	flag.BoolVar(&noProcessACL, "no-process-acl", false, "не ограничивать доступ к процессу (только для разработки)")
+	flag.BoolVar(&strictHandles, "strict-handles", false, "включить аварийное завершение при неверных handle")
 	flag.Parse()
+	secure.SetStrictHandles(strictHandles)
+	mitigationErrors := secure.ApplyMitigations()
 
 	if path == "" {
 		p, err := vault.DefaultPath()
@@ -33,7 +38,7 @@ func main() {
 	}
 
 	go func() {
-		err := gui.Run(path)
+		err := gui.Run(path, noProcessACL, mitigationErrors)
 		memguard.Purge()
 		if clipErr := secure.WaitForClipboardClear(); clipErr != nil {
 			fmt.Fprintln(os.Stderr, "ZeroPass: не удалось очистить буфер обмена перед выходом:", clipErr)
