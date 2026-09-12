@@ -1,5 +1,0 @@
-LIBRARY libsodium
-EXPORTS
-    sodium_init
-    crypto_aead_xchacha20poly1305_ietf_encrypt
-    crypto_aead_xchacha20poly1305_ietf_decrypt

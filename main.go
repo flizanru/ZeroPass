@@ -4,13 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 
 	"gioui.org/app"
 	"github.com/awnumar/memguard"
 
-	"zeropass/internal/crypto"
 	"zeropass/internal/gui"
 	"zeropass/internal/secure"
 	"zeropass/internal/vault"
@@ -35,13 +33,7 @@ func main() {
 	}
 
 	go func() {
-		exe, err := os.Executable()
-		if err == nil {
-			err = crypto.InitSodium(filepath.Join(filepath.Dir(exe), "libsodium.dll"))
-		}
-		if err == nil {
-			err = gui.Run(path)
-		}
+		err := gui.Run(path)
 		memguard.Purge()
 		secure.WaitForClipboardClear()
 		if err != nil {
