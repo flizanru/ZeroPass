@@ -12,4 +12,4 @@ func CopySensitive(_ uintptr, _ []byte, _ time.Duration) (string, error) {
 }
 
 func ClearClipboardIfOwned() error { return nil }
-func WaitForClipboardClear()       {}
+func WaitForClipboardClear() error { return nil }

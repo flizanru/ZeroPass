@@ -35,7 +35,12 @@ func main() {
 	go func() {
 		err := gui.Run(path)
 		memguard.Purge()
-		secure.WaitForClipboardClear()
+		if clipErr := secure.WaitForClipboardClear(); clipErr != nil {
+			fmt.Fprintln(os.Stderr, "ZeroPass: не удалось очистить буфер обмена перед выходом:", clipErr)
+			if err == nil {
+				err = clipErr
+			}
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ZeroPass:", err)
 			os.Exit(1)

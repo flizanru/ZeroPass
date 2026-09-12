@@ -17,24 +17,28 @@ var (
 	procOpenClipboard      = user32.NewProc("OpenClipboard")
 	procCloseClipboard     = user32.NewProc("CloseClipboard")
 	procEmptyClipboard     = user32.NewProc("EmptyClipboard")
+	procGetClipboardData   = user32.NewProc("GetClipboardData")
 	procSetClipboardData   = user32.NewProc("SetClipboardData")
 	procRegisterClipFormat = user32.NewProc("RegisterClipboardFormatW")
 	procGetClipboardSeqNum = user32.NewProc("GetClipboardSequenceNumber")
 	procGlobalAlloc        = kernel32.NewProc("GlobalAlloc")
 	procGlobalFree         = kernel32.NewProc("GlobalFree")
 	procGlobalLock         = kernel32.NewProc("GlobalLock")
+	procGlobalSize         = kernel32.NewProc("GlobalSize")
 	procGlobalUnlock       = kernel32.NewProc("GlobalUnlock")
 	procRtlMoveMemory      = kernel32.NewProc("RtlMoveMemory")
 )
 
 const (
-	cfUnicodeText = 13
-	gmemMoveable  = 0x0002
+	cfUnicodeText     = 13
+	gmemMoveable      = 0x0002
+	clipClearDeadline = 5 * time.Second
 )
 
 var (
-	clipMu sync.Mutex
-	ourSeq uint32
+	clipMu    sync.Mutex
+	ourSeq    uint32
+	ourHandle uintptr
 )
 
 func openClipboardRetry(hwnd uintptr) error {
@@ -131,9 +135,10 @@ func CopySensitive(hwnd uintptr, data []byte, ttl time.Duration) (warning string
 	}
 	histErr := setDwordFormat("CanIncludeInClipboardHistory", 0)
 	cloudErr := setDwordFormat("CanUploadToCloudClipboard", 0)
-	_ = setDwordFormat("ExcludeClipboardContentFromMonitorProcessing", 0)
-	if histErr != nil || cloudErr != nil {
-		return "", errors.New("не удалось запретить историю/облако; пароль не скопирован")
+	monitorErr := setDwordFormat("ExcludeClipboardContentFromMonitorProcessing", 0)
+	warning, err = clipboardPolicyResult(histErr, cloudErr, monitorErr)
+	if err != nil {
+		return "", err
 	}
 	h, err := hglobalFromU16(u)
 	if err != nil {
@@ -152,17 +157,45 @@ func CopySensitive(hwnd uintptr, data []byte, ttl time.Duration) (warning string
 
 	seq, _, _ := procGetClipboardSeqNum.Call()
 	ourSeq = uint32(seq)
+	ourHandle = h
 
 	go func(mySeq uint32) {
 		time.Sleep(ttl)
-		retryClear(mySeq)
+		_ = retryClear(mySeq)
 	}(ourSeq)
 	return warning, nil
+}
+
+func clipboardPolicyResult(historyErr, cloudErr, monitorErr error) (string, error) {
+	if historyErr != nil || cloudErr != nil {
+		return "", errors.New("не удалось запретить историю/облако; пароль не скопирован")
+	}
+	if monitorErr != nil {
+		return "не удалось исключить буфер из обработки менеджерами", nil
+	}
+	return "", nil
 }
 
 var clipOpen = openClipboardRetry
 var clipClose = func() { procCloseClipboard.Call() }
 var clipSequence = func() uint32 { seq, _, _ := procGetClipboardSeqNum.Call(); return uint32(seq) }
+var clipData = func() uintptr { h, _, _ := procGetClipboardData.Call(cfUnicodeText); return h }
+var clipSize = func(h uintptr) uintptr { n, _, _ := procGlobalSize.Call(h); return n }
+var clipLock = func(h uintptr) uintptr { p, _, _ := procGlobalLock.Call(h); return p }
+var clipUnlock = func(h uintptr) { procGlobalUnlock.Call(h) }
+var clipWipe = func(p, size uintptr) {
+	var zeros [4096]byte
+	for size > 0 {
+		n := uintptr(len(zeros))
+		if size < n {
+			n = size
+		}
+		procRtlMoveMemory.Call(p, uintptr(unsafe.Pointer(&zeros[0])), n)
+		p += n
+		size -= n
+	}
+	runtime.KeepAlive(zeros)
+}
 var clipEmpty = func() error {
 	if r, _, _ := procEmptyClipboard.Call(); r == 0 {
 		return errors.New("не удалось очистить буфер обмена")
@@ -184,18 +217,44 @@ func clearIfSeq(mySeq uint32) error {
 	defer clipClose()
 	if clipSequence() != mySeq {
 		ourSeq = 0
+		ourHandle = 0
 		return nil
+	}
+	if ourHandle != 0 && clipData() == ourHandle {
+		size := clipSize(ourHandle)
+		if size == 0 {
+			return errors.New("не удалось определить размер данных буфера обмена")
+		}
+		p := clipLock(ourHandle)
+		if p == 0 {
+			return errors.New("не удалось заблокировать память буфера обмена для очистки")
+		}
+		clipWipe(p, size)
+		clipUnlock(ourHandle)
 	}
 	if err := clipEmpty(); err != nil {
 		return err
 	}
 	ourSeq = 0
+	ourHandle = 0
 	return nil
 }
 
-func retryClear(mySeq uint32) {
-	for clearIfSeq(mySeq) != nil {
-		time.Sleep(250 * time.Millisecond)
+func retryClear(mySeq uint32) error {
+	deadline := time.Now().Add(clipClearDeadline)
+	for {
+		err := clearIfSeq(mySeq)
+		if err == nil {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("не удалось очистить собственный буфер обмена за отведённое время: %w", err)
+		}
+		if remaining > 250*time.Millisecond {
+			remaining = 250 * time.Millisecond
+		}
+		time.Sleep(remaining)
 	}
 }
 
@@ -204,15 +263,15 @@ func ClearClipboardIfOwned() error {
 	mySeq := ourSeq
 	clipMu.Unlock()
 	if err := clearIfSeq(mySeq); err != nil {
-		go retryClear(mySeq)
+		go func() { _ = retryClear(mySeq) }()
 		return err
 	}
 	return nil
 }
 
-func WaitForClipboardClear() {
+func WaitForClipboardClear() error {
 	clipMu.Lock()
 	mySeq := ourSeq
 	clipMu.Unlock()
-	retryClear(mySeq)
+	return retryClear(mySeq)
 }
