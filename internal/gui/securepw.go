@@ -2,13 +2,16 @@ package gui
 
 import (
 	"image"
+	"io"
 	"strings"
 	"unicode/utf8"
 
 	"gioui.org/gesture"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
+	"gioui.org/io/transfer"
 	"gioui.org/layout"
 	"gioui.org/op/clip"
 	"gioui.org/unit"
@@ -108,7 +111,7 @@ func (sp *securePW) setBytes(src []byte) {
 	memguard.WipeBytes(src)
 }
 
-func (sp *securePW) update(gtx layout.Context) (submit bool) {
+func (sp *securePW) update(gtx layout.Context) (submit, changed bool) {
 	if sp.focusReq {
 		gtx.Execute(key.FocusCmd{Tag: sp})
 		sp.focusReq = false
@@ -124,6 +127,8 @@ func (sp *securePW) update(gtx layout.Context) (submit bool) {
 	}
 	filters := []event.Filter{
 		key.FocusFilter{Target: sp},
+		transfer.TargetFilter{Target: sp, Type: "application/text"},
+		key.Filter{Focus: sp, Name: "V", Required: key.ModShortcut},
 		key.Filter{Focus: sp, Name: key.NameDeleteBackward},
 		key.Filter{Focus: sp, Name: key.NameReturn},
 		key.Filter{Focus: sp, Name: key.NameEnter},
@@ -135,20 +140,36 @@ func (sp *securePW) update(gtx layout.Context) (submit bool) {
 		}
 		switch ke := ev.(type) {
 		case key.EditEvent:
+			before := sp.n
 			sp.insert(ke.Text)
+			changed = changed || sp.n != before
+		case transfer.DataEvent:
+			r := ke.Open()
+			content, err := io.ReadAll(io.LimitReader(r, maxPasswordBytes+1))
+			_ = r.Close()
+			if err == nil {
+				sp.setBytes(content)
+				changed = true
+			} else {
+				memguard.WipeBytes(content)
+			}
 		case key.Event:
 			if ke.State != key.Press {
 				break
 			}
 			switch ke.Name {
+			case "V":
+				gtx.Execute(clipboard.ReadCmd{Tag: sp})
 			case key.NameDeleteBackward:
+				before := sp.n
 				sp.backspace()
+				changed = changed || sp.n != before
 			case key.NameReturn, key.NameEnter:
 				submit = true
 			}
 		}
 	}
-	return submit
+	return submit, changed
 }
 
 func (sp *securePW) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {

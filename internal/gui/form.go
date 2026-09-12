@@ -34,7 +34,7 @@ type editForm struct {
 	prevLens  [4]int
 }
 
-func newEditForm(m vault.EntryMeta, editing, fromDetail bool) *editForm {
+func newEditForm(m vault.EntryMeta, notes string, editing, fromDetail bool) *editForm {
 	f := &editForm{editing: editing, fromDetail: fromDetail, id: m.ID}
 	f.title.SingleLine = true
 	f.username.SingleLine = true
@@ -42,7 +42,7 @@ func newEditForm(m vault.EntryMeta, editing, fromDetail bool) *editForm {
 	f.title.SetText(m.Title)
 	f.username.SetText(m.Username)
 	f.url.SetText(m.URL)
-	f.notes.SetText(m.Notes)
+	f.notes.SetText(notes)
 	hint := "новый пароль"
 	if editing {
 		hint = "новый пароль (пусто — оставить прежний)"
@@ -57,10 +57,17 @@ func (f *editForm) destroy() {
 	if f.pw != nil {
 		f.pw.destroy()
 	}
-	f.title.SetText("")
-	f.username.SetText("")
-	f.url.SetText("")
-	f.notes.SetText("")
+	wipeEditor(&f.title)
+	wipeEditor(&f.username)
+	wipeEditor(&f.url)
+	wipeEditor(&f.notes)
+}
+
+func wipeEditor(ed *widget.Editor) {
+	if n := ed.Len(); n > 0 {
+		ed.SetText(strings.Repeat("x", n))
+	}
+	ed.SetText("")
 }
 
 func (f *editForm) meta() vault.EntryMeta {
@@ -69,7 +76,6 @@ func (f *editForm) meta() vault.EntryMeta {
 		Title:    strings.TrimSpace(f.title.Text()),
 		Username: strings.TrimSpace(f.username.Text()),
 		URL:      strings.TrimSpace(f.url.Text()),
-		Notes:    f.notes.Text(),
 	}
 }
 
@@ -96,7 +102,10 @@ func (a *App) layoutEdit(gtx layout.Context) layout.Dimensions {
 		gtx.Execute(key.FocusCmd{Tag: &f.title})
 		f.focusReq = false
 	}
-	submit := f.pw.update(gtx)
+	submit, pwChanged := f.pw.update(gtx)
+	if pwChanged {
+		a.act(gtx)
+	}
 	f.bumpIfTyping(a, gtx)
 
 	if f.genBtn.Clicked(gtx) {
@@ -208,6 +217,8 @@ func (a *App) saveForm() {
 	if pw != nil {
 		raw = pw.Bytes()
 	}
+	notes := []byte(f.notes.Text())
+	defer memguard.WipeBytes(notes)
 	err := a.vault.Update(func(st *vault.Store) error {
 
 		if f.editing {
@@ -219,6 +230,9 @@ func (a *App) saveForm() {
 					return err
 				}
 			}
+			if err := st.SetNotes(meta.ID, notes); err != nil {
+				return err
+			}
 		} else {
 			if pw == nil {
 				return errors.New("нужен пароль: введите или нажмите «Сгенерировать»")
@@ -228,6 +242,9 @@ func (a *App) saveForm() {
 				return err
 			}
 			meta.ID = id
+			if err := st.SetNotes(id, notes); err != nil {
+				return err
+			}
 		}
 
 		return nil

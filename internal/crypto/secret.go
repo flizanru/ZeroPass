@@ -56,15 +56,44 @@ func (s *Session) Destroy() {
 	}
 }
 
-func NewSecret(data []byte) (*Secret, error) {
+func NewSecret(data []byte) (*Secret, *Session, error) {
 	s := NewSession()
 	e, err := s.Seal(data)
 	if err != nil {
 		s.Destroy()
+		return nil, nil, err
 	}
-	return e, err
+	return e, s, nil
 }
 
-func (e *Secret) Destroy() { e.session.Destroy() }
+// Wipe destroys this encrypted value without revoking other secrets that share
+// its session.
+func (e *Secret) Wipe() {
+	if e == nil {
+		return
+	}
+	memguard.WipeBytes(e.nonce)
+	memguard.WipeBytes(e.ct)
+	e.nonce = nil
+	e.ct = nil
+}
 
-func (e *Secret) Size() int { return len(e.ct) - TagLen }
+// Clone duplicates only the per-value ciphertext. The session remains shared;
+// the caller must never destroy it through the clone.
+func (e *Secret) Clone() *Secret {
+	if e == nil {
+		return nil
+	}
+	return &Secret{
+		session: e.session,
+		nonce:   append([]byte(nil), e.nonce...),
+		ct:      append([]byte(nil), e.ct...),
+	}
+}
+
+func (e *Secret) Size() int {
+	if e == nil || len(e.ct) < TagLen {
+		return 0
+	}
+	return len(e.ct) - TagLen
+}

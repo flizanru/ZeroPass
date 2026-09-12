@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	"gioui.org/app"
 	"github.com/awnumar/memguard"
@@ -16,7 +17,8 @@ import (
 )
 
 func main() {
-
+	secure.SuppressCrashDumps()
+	debug.SetTraceback("none")
 	memguard.CatchInterrupt()
 
 	var path string

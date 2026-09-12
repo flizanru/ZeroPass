@@ -80,10 +80,16 @@ func (a *App) layoutAuth(gtx layout.Context) layout.Dimensions {
 	}
 	create := a.stage == stageCreate
 
-	submit1 := a.pw1.update(gtx)
-	submit2 := false
+	submit1, changed1 := a.pw1.update(gtx)
+	if changed1 {
+		a.act(gtx)
+	}
+	submit2, changed2 := false, false
 	if create {
-		submit2 = a.pw2.update(gtx)
+		submit2, changed2 = a.pw2.update(gtx)
+		if changed2 {
+			a.act(gtx)
+		}
 	}
 	if submit1 {
 		a.act(gtx)
@@ -165,6 +171,7 @@ func (a *App) startUnlock() {
 	a.beginAuth("Проверяем мастер-пароль…")
 	ch, path := a.authCh, a.path
 	go func() {
+		defer exitOnPanic()
 		restore := kdfCPUCap()
 		v, err := vault.Unlock(path, pw)
 		restore()
@@ -199,6 +206,7 @@ func (a *App) startCreate() {
 	a.beginAuth("Подготавливаем защищённое пространство…")
 	ch, path := a.authCh, a.path
 	go func() {
+		defer exitOnPanic()
 		restore := kdfCPUCap()
 		v, err := vault.Create(path, b1)
 		restore()
@@ -324,7 +332,7 @@ func (a *App) visibleRows(q string) []int {
 func (a *App) layoutList(gtx layout.Context) layout.Dimensions {
 	if a.addBtn.Clicked(gtx) {
 		a.act(gtx)
-		a.form = newEditForm(vault.EntryMeta{}, false, false)
+		a.form = newEditForm(vault.EntryMeta{}, "", false, false)
 		a.form.focusFirst()
 		a.stage = stageEdit
 		a.clearStatus()
@@ -480,6 +488,7 @@ func (a *App) borderColor() color.NRGBA {
 
 func (a *App) openDetail(m vault.EntryMeta) {
 	a.destroyRevealed()
+	a.destroyNotesRevealed()
 	a.detailID = m.ID
 	a.detailMeta = m
 	a.stage = stageDetail
@@ -490,6 +499,7 @@ func (a *App) layoutDetail(gtx layout.Context) layout.Dimensions {
 	if a.backBtn.Clicked(gtx) {
 		a.act(gtx)
 		a.destroyRevealed()
+		a.destroyNotesRevealed()
 		a.stage = stageList
 		a.clearStatus()
 		return layout.Dimensions{}
@@ -502,6 +512,18 @@ func (a *App) layoutDetail(gtx layout.Context) layout.Dimensions {
 			a.setErr(err)
 		} else {
 			a.revealed = b
+			a.revealedAt = gtx.Now
+		}
+	}
+	if a.showNotesBtn.Clicked(gtx) {
+		a.act(gtx)
+		if a.notesRevealed != nil {
+			a.destroyNotesRevealed()
+		} else if b, err := a.vault.Store.Notes(a.detailID); err != nil {
+			a.setErr(err)
+		} else {
+			a.notesRevealed = b
+			a.notesRevealedAt = gtx.Now
 		}
 	}
 	if a.copyBtn.Clicked(gtx) {
@@ -511,7 +533,18 @@ func (a *App) layoutDetail(gtx layout.Context) layout.Dimensions {
 	if a.editBtn.Clicked(gtx) {
 		a.act(gtx)
 		a.destroyRevealed()
-		a.form = newEditForm(a.detailMeta, true, true)
+		notes, err := a.vault.Store.Notes(a.detailID)
+		if err != nil {
+			a.setErr(err)
+			return layout.Dimensions{}
+		}
+		noteText := ""
+		if notes != nil {
+			noteText = string(notes.Bytes())
+			notes.Destroy()
+		}
+		a.destroyNotesRevealed()
+		a.form = newEditForm(a.detailMeta, noteText, true, true)
 		a.form.focusFirst()
 		a.stage = stageEdit
 		a.clearStatus()
@@ -519,6 +552,7 @@ func (a *App) layoutDetail(gtx layout.Context) layout.Dimensions {
 	if a.delBtn.Clicked(gtx) {
 		a.act(gtx)
 		a.destroyRevealed()
+		a.destroyNotesRevealed()
 		a.deleteID = a.detailID
 		a.deleteName = a.detailMeta.Title
 		a.stage = stageConfirmDelete
@@ -526,11 +560,15 @@ func (a *App) layoutDetail(gtx layout.Context) layout.Dimensions {
 	}
 
 	m := a.detailMeta
-	pwText := "••••••••••••"
 	showTxt := "Показать"
 	if a.revealed != nil {
-		pwText = string(a.revealed.Bytes())
 		showTxt = "Скрыть"
+	}
+	notesText := "••••••••••••"
+	showNotesTxt := "Показать заметки"
+	if a.notesRevealed != nil {
+		notesText = valueOrDash(string(a.notesRevealed.Bytes()))
+		showNotesTxt = "Скрыть заметки"
 	}
 
 	field := func(name, val string) layout.FlexChild {
@@ -555,13 +593,31 @@ func (a *App) layoutDetail(gtx layout.Context) layout.Dimensions {
 		vspace(6),
 		field("URL", m.URL),
 		vspace(6),
-		field("Заметки", m.Notes),
+		field("Заметки", notesText),
 		vspace(6),
-		field("Пароль", pwText),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					gtx.Constraints.Min.X = gtx.Dp(unit.Dp(90))
+					lbl := material.Body2(a.th, "Пароль")
+					lbl.Color = a.th.Fg
+					lbl.Color.A = 0xaa
+					return lbl.Layout(gtx)
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					if a.revealed != nil {
+						return a.pwView.layout(gtx, a.th, a.revealed)
+					}
+					return material.Body1(a.th, "••••••••••••").Layout(gtx)
+				}),
+			)
+		}),
 		vspace(18),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 				layout.Rigid(a.button(&a.showBtn, showTxt)),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+				layout.Rigid(a.button(&a.showNotesBtn, showNotesTxt)),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 				layout.Rigid(a.button(&a.copyBtn, "Копировать")),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),

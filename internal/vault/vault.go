@@ -13,15 +13,16 @@ var ErrConflict = errors.New("хранилище изменено другим �
 var ErrExists = errors.New("хранилище или резервная копия уже существуют")
 
 type Vault struct {
-	Path      string
-	Params    crypto.KDFParams
-	Salt      []byte
-	key       *crypto.Secret
-	Store     *Store
-	path      string
-	header    []byte
-	revision  [32]byte
-	persisted bool
+	Path       string
+	Params     crypto.KDFParams
+	Salt       []byte
+	key        *crypto.Secret
+	keySession *crypto.Session
+	Store      *Store
+	path       string
+	header     []byte
+	revision   [32]byte
+	persisted  bool
 }
 
 func Create(path string, password *memguard.LockedBuffer) (*Vault, error) {
@@ -33,16 +34,16 @@ func Create(path string, password *memguard.LockedBuffer) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := crypto.DeriveKey(password, salt, crypto.DefaultKDFParams)
+	key, keySession, err := crypto.DeriveKey(password, salt, crypto.DefaultKDFParams)
 	if err != nil {
 		return nil, err
 	}
 	st, err := newStore()
 	if err != nil {
-		key.Destroy()
+		keySession.Destroy()
 		return nil, err
 	}
-	v := &Vault{Path: path, path: path, Params: crypto.DefaultKDFParams, Salt: salt, key: key, Store: st, header: encodeHeader(crypto.DefaultKDFParams, salt)}
+	v := &Vault{Path: path, path: path, Params: crypto.DefaultKDFParams, Salt: salt, key: key, keySession: keySession, Store: st, header: encodeHeader(crypto.DefaultKDFParams, salt)}
 	if err := v.Save(); err != nil {
 		v.Lock()
 		return nil, fmt.Errorf("создание хранилища: %w", err)
@@ -71,27 +72,27 @@ func Unlock(path string, password *memguard.LockedBuffer) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := crypto.DeriveKey(password, salt, params)
+	key, keySession, err := crypto.DeriveKey(password, salt, params)
 	if err != nil {
 		return nil, err
 	}
 	plain, err := crypto.Open(key, nonce, ct, header)
 	if err != nil {
-		key.Destroy()
+		keySession.Destroy()
 		return nil, err
 	}
 	defer plain.Destroy()
 	st, err := newStore()
 	if err != nil {
-		key.Destroy()
+		keySession.Destroy()
 		return nil, err
 	}
 	if err := st.load(plain.Bytes()); err != nil {
 		st.Close()
-		key.Destroy()
+		keySession.Destroy()
 		return nil, fmt.Errorf("загрузка записей: %w", err)
 	}
-	return &Vault{Path: path, path: path, Params: params, Salt: append([]byte(nil), salt...), key: key, Store: st, header: append([]byte(nil), header...), revision: sha256.Sum256(data), persisted: true}, nil
+	return &Vault{Path: path, path: path, Params: params, Salt: append([]byte(nil), salt...), key: key, keySession: keySession, Store: st, header: append([]byte(nil), header...), revision: sha256.Sum256(data), persisted: true}, nil
 }
 
 func (v *Vault) Save() error { return v.save(v.Store) }
@@ -102,12 +103,20 @@ func (v *Vault) Update(change func(*Store) error) error {
 	}
 	candidate := v.Store.clone()
 	if err := change(candidate); err != nil {
+		candidate.wipeValues()
 		return err
 	}
 	if err := v.save(candidate); err != nil {
+		candidate.wipeValues()
 		return err
 	}
-	v.Store.metas, v.Store.pw, v.Store.nextID = candidate.metas, candidate.pw, candidate.nextID
+	for _, secret := range v.Store.pw {
+		secret.Wipe()
+	}
+	for _, secret := range v.Store.notes {
+		secret.Wipe()
+	}
+	v.Store.metas, v.Store.pw, v.Store.notes, v.Store.nextID = candidate.metas, candidate.pw, candidate.notes, candidate.nextID
 	return nil
 }
 
@@ -162,10 +171,11 @@ func (v *Vault) Lock() {
 		v.Store.Close()
 		v.Store = nil
 	}
-	if v.key != nil {
-		v.key.Destroy()
-		v.key = nil
+	if v.keySession != nil {
+		v.keySession.Destroy()
+		v.keySession = nil
 	}
+	v.key = nil
 }
 
 func Recover(path string) error {

@@ -3,6 +3,7 @@ package gui
 import (
 	"image"
 	"image/color"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ const (
 	idleTimeout  = 5 * time.Minute
 	idleTick     = time.Second
 	clipboardTTL = 15 * time.Second
+	revealTTL    = 20 * time.Second
 	pwGenLen     = 20
 )
 
@@ -61,6 +63,7 @@ type App struct {
 	mu         sync.Mutex
 	done       chan struct{}
 	tickerDone chan struct{}
+	suspendCh  chan struct{}
 	hwnd       uintptr
 	w          *app.Window
 	th         *material.Theme
@@ -91,14 +94,19 @@ type App struct {
 	lockBtn widget.Clickable
 	search  widget.Editor
 
-	detailID   int64
-	detailMeta vault.EntryMeta
-	revealed   *memguard.LockedBuffer
-	showBtn    widget.Clickable
-	copyBtn    widget.Clickable
-	editBtn    widget.Clickable
-	delBtn     widget.Clickable
-	backBtn    widget.Clickable
+	detailID        int64
+	detailMeta      vault.EntryMeta
+	revealed        *memguard.LockedBuffer
+	revealedAt      time.Time
+	notesRevealed   *memguard.LockedBuffer
+	notesRevealedAt time.Time
+	pwView          securePWView
+	showBtn         widget.Clickable
+	showNotesBtn    widget.Clickable
+	copyBtn         widget.Clickable
+	editBtn         widget.Clickable
+	delBtn          widget.Clickable
+	backBtn         widget.Clickable
 
 	form *editForm
 
@@ -134,10 +142,22 @@ func Run(path string) error {
 		pw2:        newSecurePW("повторите пароль"),
 		done:       make(chan struct{}),
 		tickerDone: make(chan struct{}),
+		suspendCh:  make(chan struct{}, 1),
 	}
 	a.list.Axis = layout.Vertical
 	a.search.SingleLine = true
 	defer a.destroy()
+	releaseSuspend, suspendErr := secure.LockOnSuspend(func() {
+		select {
+		case a.suspendCh <- struct{}{}:
+		default:
+		}
+	})
+	if suspendErr != nil {
+		a.setWarn(suspendErr.Error())
+	} else {
+		defer releaseSuspend()
+	}
 
 	if err := a.initStage(); err != nil {
 		return err
@@ -154,6 +174,7 @@ func Run(path string) error {
 	go a.idleTicker()
 
 	var ops op.Ops
+	defer exitOnPanic()
 	for {
 		switch e := w.Event().(type) {
 		case app.DestroyEvent:
@@ -180,6 +201,15 @@ func (a *App) idleTicker() {
 		select {
 		case <-a.done:
 			return
+		case <-a.suspendCh:
+			a.mu.Lock()
+			if a.unlocked() {
+				a.lock("хранилище заблокировано перед переходом в сон")
+			}
+			a.mu.Unlock()
+			if a.w != nil {
+				a.w.Invalidate()
+			}
 		case now := <-t.C:
 			a.mu.Lock()
 			a.checkSession(now)
@@ -190,6 +220,15 @@ func (a *App) idleTicker() {
 			}
 		}
 	}
+}
+
+func exitOnPanic() {
+	if recover() == nil {
+		return
+	}
+	memguard.Purge()
+	_ = secure.ClearClipboardIfOwned()
+	os.Exit(2)
 }
 
 func (a *App) onWindowHandle(hwnd uintptr) {
@@ -309,6 +348,7 @@ func (a *App) trackActivity(gtx layout.Context) {
 
 func (a *App) lock(msg string) {
 	a.destroyRevealed()
+	a.destroyNotesRevealed()
 	if a.form != nil {
 		a.form.destroy()
 		a.form = nil
@@ -320,7 +360,7 @@ func (a *App) lock(msg string) {
 	a.rows = nil
 	a.detailID, a.detailMeta = 0, vault.EntryMeta{}
 	a.deleteID, a.deleteName = 0, ""
-	a.search.SetText("")
+	wipeEditor(&a.search)
 	a.pw1.clear()
 	a.pw2.clear()
 	a.stage = stageUnlock
@@ -340,6 +380,15 @@ func (a *App) destroyRevealed() {
 		a.revealed.Destroy()
 		a.revealed = nil
 	}
+	a.revealedAt = time.Time{}
+}
+
+func (a *App) destroyNotesRevealed() {
+	if a.notesRevealed != nil {
+		a.notesRevealed.Destroy()
+		a.notesRevealed = nil
+	}
+	a.notesRevealedAt = time.Time{}
 }
 
 func (a *App) destroy() {
@@ -357,6 +406,7 @@ func (a *App) destroy() {
 		a.authCh = nil
 	}
 	a.destroyRevealed()
+	a.destroyNotesRevealed()
 	if a.form != nil {
 		a.form.destroy()
 	}
@@ -386,9 +436,21 @@ func deadlineExpired(now, last time.Time) bool {
 	return now.Before(last) || now.Sub(last) >= idleTimeout || now.Round(0).Sub(last.Round(0)) >= idleTimeout
 }
 
+func revealExpired(now, at time.Time) bool {
+	return !at.IsZero() && (now.Before(at) || now.Sub(at) >= revealTTL || now.Round(0).Sub(at.Round(0)) >= revealTTL)
+}
+
 func (a *App) checkSession(now time.Time) {
 	if !a.unlocked() {
 		return
+	}
+	if revealExpired(now, a.revealedAt) {
+		a.destroyRevealed()
+		a.setWarn("раскрытый пароль автоматически скрыт")
+	}
+	if revealExpired(now, a.notesRevealedAt) {
+		a.destroyNotesRevealed()
+		a.setWarn("раскрытые заметки автоматически скрыты")
 	}
 	if deadlineExpired(now, a.lastAct) {
 		a.lock("хранилище заблокировано по тайм-ауту бездействия")
@@ -420,6 +482,9 @@ func (a *App) statusBar(gtx layout.Context) layout.Dimensions {
 			col := rgb(0x66d19e)
 			if !a.protected {
 				txt = "● защита экрана недоступна на этом устройстве"
+				if a.protNote != "" {
+					txt += ": " + a.protNote
+				}
 				col = rgb(0xff6b6b)
 			}
 			lbl := material.Caption(a.th, txt)

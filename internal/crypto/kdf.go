@@ -6,7 +6,7 @@ import (
 	"runtime/debug"
 
 	"github.com/awnumar/memguard"
-	"golang.org/x/crypto/argon2"
+	"zeropass/internal/crypto/argon2"
 )
 
 const (
@@ -46,16 +46,16 @@ func NewSalt() ([]byte, error) {
 	return s, nil
 }
 
-func DeriveKey(password *memguard.LockedBuffer, salt []byte, p KDFParams) (*Secret, error) {
+func DeriveKey(password *memguard.LockedBuffer, salt []byte, p KDFParams) (*Secret, *Session, error) {
 	if err := p.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(salt) != SaltLen {
-		return nil, fmt.Errorf("длина соли %d, ожидалось %d", len(salt), SaltLen)
+		return nil, nil, fmt.Errorf("длина соли %d, ожидалось %d", len(salt), SaltLen)
 	}
 	key := argon2.IDKey(password.Bytes(), salt, p.Time, p.MemoryKiB, p.Threads, KeyLen)
-	enc, err := NewSecret(key)
+	enc, session, err := NewSecret(key)
 
 	debug.FreeOSMemory()
-	return enc, err
+	return enc, session, err
 }
